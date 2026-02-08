@@ -2,12 +2,12 @@ import asyncio
 import bz2
 import os
 import time
-from datetime import datetime
+from datetime import datetime, date
 from typing import cast
 
 import discord
 from tortoise import Tortoise
-from tortoise.fields.data import DatetimeField, FloatField, IntField
+from tortoise.fields.data import DatetimeField, DateField, FloatField, IntField
 
 from ballsdex.core.models import (
     Ball,
@@ -49,6 +49,26 @@ def safe_datetime(value):
 
     try:
         return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    
+def safe_date(value):
+    if value in (None, "", "None"):
+        return None
+
+    if isinstance(value, date):
+        return value
+
+    try:
+        f = float(value)
+        if f > 10_000_000_000:
+            return date.fromtimestamp(f)
+        return None
+    except (TypeError, ValueError):
+        pass
+
+    try:
+        return date.fromisoformat(value)
     except ValueError:
         return None
 
@@ -110,7 +130,6 @@ SECTIONS = {
             "id",
             "ball_id",
             "catch_date",
-            "special_id",
             "special_id",
             "favorite",
             "attack_bonus",
@@ -278,6 +297,8 @@ async def load(message):
                     line_data = float(line_data)
                 elif isinstance(field_type, DatetimeField):
                     line_data = safe_datetime(line_data)
+                elif isinstance(field_type, DateField):
+                    line_data = safe_date(line_data)
 
             if isinstance(line_data, str):
                 line_data = line_data.replace("🮈", "\n")
