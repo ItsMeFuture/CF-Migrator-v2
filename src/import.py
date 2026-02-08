@@ -312,15 +312,26 @@ async def load(message):
 
     start_time = time.time()
 
+    # Claude AI - Process each model type separately and handle duplicates
     for item, value in data.items():
-        items = []
-
+        # Claude AI - Remove duplicates based on ID if present
+        seen_ids = set()
+        unique_values = []
         for model in value:
+            model_id = model.get('id')
+            if model_id is not None:
+                if model_id in seen_ids:
+                    continue  # Skip duplicate IDs
+                seen_ids.add(model_id)
+            unique_values.append(model)
+        
+        items = []
+        for model in unique_values:
             items.append(item(**model))
 
         await item.bulk_create(items)
 
-        output.append(f"- Added **{len(value):,}** {item.__name__} objects.")
+        output.append(f"- Added **{len(unique_values):,}** {item.__name__} objects.")
 
         await message.edit(embed=reload_embed())
 
@@ -367,8 +378,21 @@ async def clear_all_data():  # I'm not responsible if any of you eval goblins ru
     # Claude AI - TRUNCATE CASCADE will handle foreign key constraints and reset sequences
     if table_names:
         tables_str = ", ".join(table_names)
-        await client.execute_query(f"TRUNCATE TABLE {tables_str} RESTART IDENTITY CASCADE;")
-
+        try:
+            await client.execute_query(f"TRUNCATE TABLE {tables_str} RESTART IDENTITY CASCADE;")
+        except Exception as e:
+            # Claude AI - If TRUNCATE fails, fall back to individual deletes and manual sequence reset
+            output.append(f"- TRUNCATE failed, using fallback method: {str(e)}")
+            for model in reversed(all_models):  # Reverse order for foreign keys
+                await model.all().delete()
+            
+            # Claude AI - Manually reset sequences
+            for model in all_models:
+                try:
+                    table = model._meta.db_table
+                    await client.execute_query(f"ALTER SEQUENCE {table}_id_seq RESTART WITH 1;")
+                except Exception:
+                    pass  # Some tables might not have sequences
 
 
 async def main():
