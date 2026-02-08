@@ -242,10 +242,45 @@ def reload_embed(start_time: float | None = None, status="RUNNING"):
     return embed
 
 
+async def get_or_create_placeholder_player(missing_player_id, placeholder_log):
+    """
+    Create a unique placeholder Player for a specific missing player ID.
+    Uses discord_id offset to make them identifiable and recoverable.
+    """
+    # Claude AI - Use a large negative offset to indicate placeholder
+    # Original player_id=123 becomes discord_id=-10000000123
+    placeholder_discord_id = -10000000000 - missing_player_id
+    
+    placeholder_player = await Player.filter(discord_id=placeholder_discord_id).first()
+    if not placeholder_player:
+        placeholder_player = await Player.create(
+            discord_id=placeholder_discord_id,
+            donation_policy=0,
+            privacy_policy=0
+        )
+        placeholder_log.write(f"Created placeholder Player (discord_id={placeholder_discord_id}) for missing Player ID {missing_player_id}\n")
+    
+    return placeholder_player.pk
+
+
 async def load(message):
     lines = read_bz2("migration.txt.bz2")
     section = ""
     data = {}
+
+    # Claude AI - Open a log file for skipped records
+    skipped_log = open("/home/claude/skipped_records.log", "w", encoding="utf-8")
+    skipped_log.write("=== MIGRATION SKIPPED RECORDS LOG ===\n")
+    skipped_log.write(f"Generated: {datetime.now()}\n\n")
+    
+    # Claude AI - Open a log file for placeholder assignments
+    placeholder_log = open("/home/claude/placeholder_assignments.log", "w", encoding="utf-8")
+    placeholder_log.write("=== PLACEHOLDER ASSIGNMENTS LOG ===\n")
+    placeholder_log.write(f"Generated: {datetime.now()}\n")
+    placeholder_log.write("Records assigned to placeholder entities (grouped by original missing reference):\n\n")
+    
+    # Claude AI - Track created placeholders to avoid recreating them
+    created_placeholders = {}
 
     output.append(f"- Reading migration file with {len(lines):,} lines...")  # Claude AI - Progress message
     await message.edit(embed=reload_embed())
@@ -287,6 +322,7 @@ async def load(message):
             # Claude AI - Special handling for id field - it must never be empty
             if value == "id" and line_data == "":
                 # Skip this entire record if id is empty
+                skipped_log.write(f"Line {index} - {section_full[0].__name__}: SKIPPED - Empty ID field\n")
                 model_dict = None
                 break
             
@@ -355,6 +391,8 @@ async def load(message):
         unique_values = []
         skipped_count = 0
         fk_violation_count = 0
+        null_field_count = 0
+        duplicate_count = 0
         
         for idx, model in enumerate(value):
             # Claude AI - Progress update every 5000 records during validation
@@ -366,15 +404,18 @@ async def load(message):
             
             # Claude AI - Skip records with None/null id
             if model_id is None:
+                skipped_log.write(f"{item.__name__} - ID: None - SKIPPED: Null ID\n")
                 skipped_count += 1
                 continue
             
             # Claude AI - Skip duplicate IDs
             if model_id in seen_ids:
+                skipped_log.write(f"{item.__name__} - ID: {model_id} - SKIPPED: Duplicate ID\n")
                 skipped_count += 1
+                duplicate_count += 1
                 continue
             
-            # Claude AI - Validate foreign key references
+            # Claude AI - Validate foreign key references and create placeholders if needed
             has_invalid_fk = False
             for fk_field_name, related_model in fk_fields.items():
                 fk_value = model.get(fk_field_name)
@@ -382,10 +423,27 @@ async def load(message):
                     # Check if the referenced ID exists in our inserted_ids tracking
                     if related_model in inserted_ids:
                         if fk_value not in inserted_ids[related_model]:
-                            # Invalid foreign key reference
-                            has_invalid_fk = True
-                            fk_violation_count += 1
-                            break
+                            # Claude AI - Instead of skipping, create a placeholder if it's a Player
+                            if related_model == Player:
+                                # Check if we already created this placeholder
+                                placeholder_key = f"Player_{fk_value}"
+                                if placeholder_key not in created_placeholders:
+                                    placeholder_id = await get_or_create_placeholder_player(fk_value, placeholder_log)
+                                    created_placeholders[placeholder_key] = placeholder_id
+                                    # Add to inserted_ids so future records can reference it
+                                    inserted_ids[Player].add(placeholder_id)
+                                else:
+                                    placeholder_id = created_placeholders[placeholder_key]
+                                
+                                # Update the model to use the placeholder
+                                model[fk_field_name] = placeholder_id
+                                placeholder_log.write(f"{item.__name__} ID {model_id}: Assigned {fk_field_name}={placeholder_id} (was {fk_value})\n")
+                            else:
+                                # For other models, still skip (or you can add placeholder logic for them too)
+                                skipped_log.write(f"{item.__name__} - ID: {model_id} - SKIPPED: Invalid FK {fk_field_name}={fk_value} (references non-existent {related_model.__name__})\n")
+                                has_invalid_fk = True
+                                fk_violation_count += 1
+                                break
             
             if has_invalid_fk:
                 skipped_count += 1
@@ -393,16 +451,19 @@ async def load(message):
             
             # Claude AI - Check for None values in non-nullable fields
             skip_record = False
+            null_fields = []
             for field_name, field_value in model.items():
                 if field_value is None and field_name in fields_map:
                     field_obj = fields_map[field_name]
                     # Check if field is required (not null and not a relation field)
                     if hasattr(field_obj, 'null') and not field_obj.null:
+                        null_fields.append(field_name)
                         skip_record = True
-                        break
             
             if skip_record:
+                skipped_log.write(f"{item.__name__} - ID: {model_id} - SKIPPED: Null required fields: {', '.join(null_fields)}\n")
                 skipped_count += 1
+                null_field_count += 1
                 continue
                 
             seen_ids.add(model_id)
@@ -413,6 +474,7 @@ async def load(message):
         
         # Claude AI - Create model instances with additional error handling
         items = []
+        validation_fail_count = 0
         for idx, model in enumerate(unique_values):
             # Claude AI - Progress update every 5000 records during instance creation
             if idx > 0 and idx % 5000 == 0:
@@ -424,7 +486,9 @@ async def load(message):
                 items.append(instance)
             except (ValueError, ValidationError) as e:
                 # Claude AI - Skip records that fail validation
+                skipped_log.write(f"{item.__name__} - ID: {model.get('id')} - SKIPPED: Validation error: {str(e)[:200]}\n")
                 skipped_count += 1
+                validation_fail_count += 1
                 continue
 
         output[-1] = f"- Saving {item.__name__} to database... ({len(items):,} objects)"  # Claude AI - Progress message
@@ -440,12 +504,14 @@ async def load(message):
             except Exception as e:
                 # Claude AI - Log the actual error to help debug
                 error_msg = f"ERROR: {type(e).__name__}: {str(e)[:200]}"
+                skipped_log.write(f"\n{item.__name__} BULK CREATE FAILED: {error_msg}\n")
                 output.append(f"- Bulk create failed for {item.__name__}: {error_msg}")
                 output.append(f"- Attempting individual saves for {len(items):,} records (THIS WILL BE SLOW)...")
                 await message.edit(embed=reload_embed())
                 
                 success_count = 0
                 successful_ids = set()
+                individual_fail_count = 0
                 
                 for idx, single_item in enumerate(items):
                     if idx > 0 and idx % 1000 == 0:
@@ -458,25 +524,54 @@ async def load(message):
                         # Track the ID of successfully saved items
                         if hasattr(single_item, 'id'):
                             successful_ids.add(single_item.id)
-                    except Exception:
+                    except Exception as individual_error:
+                        skipped_log.write(f"{item.__name__} - ID: {getattr(single_item, 'id', 'unknown')} - SKIPPED: Individual save error: {str(individual_error)[:200]}\n")
                         skipped_count += 1
+                        individual_fail_count += 1
                 
                 # Claude AI - Track IDs that were actually saved
                 inserted_ids[item] = successful_ids
                 items = [None] * success_count  # Just for counting
 
+        # Claude AI - Build detailed skip message with breakdown
         msg = f"- Added **{len(items):,}** {item.__name__} objects."
+        skip_details = []
         if fk_violation_count > 0:
-            msg += f" (skipped {fk_violation_count} FK violations, {skipped_count - fk_violation_count} other invalid/duplicates)"
-        elif skipped_count > 0:
-            msg += f" (skipped {skipped_count} invalid/duplicates)"
+            skip_details.append(f"{fk_violation_count} FK violations")
+        if null_field_count > 0:
+            skip_details.append(f"{null_field_count} null fields")
+        if duplicate_count > 0:
+            skip_details.append(f"{duplicate_count} duplicates")
+        if validation_fail_count > 0:
+            skip_details.append(f"{validation_fail_count} validation errors")
+        
+        if skip_details:
+            msg += f" (skipped: {', '.join(skip_details)})"
+        
         output[-1] = msg  # Claude AI - Replace progress message with final count
+        skipped_log.write(f"\n{item.__name__} SUMMARY: Added {len(items):,}, Skipped {skipped_count}\n\n")
         await message.edit(embed=reload_embed())
 
     output.append("- Updating database sequences...")  # Claude AI - Progress message
     await message.edit(embed=reload_embed())
     
     await sequence_all_models()
+
+    # Claude AI - Close the log files and copy to outputs
+    skipped_log.write("\n=== END OF LOG ===\n")
+    skipped_log.close()
+    
+    placeholder_log.write("\n=== END OF LOG ===\n")
+    placeholder_log.write(f"\nTo find all placeholder players: SELECT * FROM player WHERE discord_id < -10000000000;\n")
+    placeholder_log.write(f"To recover original player ID from placeholder: original_id = abs(discord_id + 10000000000)\n")
+    placeholder_log.close()
+    
+    # Claude AI - Copy log files to outputs directory
+    import shutil
+    shutil.copy("/home/claude/skipped_records.log", "/mnt/user-data/outputs/skipped_records.log")
+    shutil.copy("/home/claude/placeholder_assignments.log", "/mnt/user-data/outputs/placeholder_assignments.log")
+    
+    output.append("- Migration complete! Logs saved: skipped_records.log, placeholder_assignments.log")
 
     await message.edit(embed=reload_embed(start_time, "FINISHED"))
 
