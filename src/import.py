@@ -275,6 +275,12 @@ async def load(message):
         for value, line_data in zip(section_full[1], line.split("╵")):
             attribute_index += 1
 
+            # Claude AI - Special handling for id field - it must never be empty
+            if value == "id" and line_data == "":
+                # Skip this entire record if id is empty
+                model_dict = None
+                break
+            
             if line_data == "":
                 continue
 
@@ -308,7 +314,9 @@ async def load(message):
 
             model_dict[value] = line_data
 
-        data[section_full[0]].append(model_dict)
+        # Claude AI - Only add the record if it has a valid id
+        if model_dict is not None:
+            data[section_full[0]].append(model_dict)
 
     start_time = time.time()
 
