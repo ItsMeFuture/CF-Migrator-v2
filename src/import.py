@@ -313,12 +313,6 @@ async def load(message):
     start_time = time.time()
 
     for item, value in data.items():
-        # Reset sequence before inserting to ensure no conflicts
-        try:
-            await reset_sequence(item)
-        except Exception:
-            pass
-            
         items = []
 
         for model in value:
@@ -356,43 +350,25 @@ async def sequence_all_models():
         await sequence_model(model)
 
 
-async def reset_sequence(model):
-    """Reset the auto-increment sequence for a model's table."""
-    client = Tortoise.get_connection("default")
-    table_name = model._meta.db_table
-    await client.execute_query(f"ALTER SEQUENCE {table_name}_id_seq RESTART WITH 1;")
-
-
 async def clear_all_data():  # I'm not responsible if any of you eval goblins run this on your dex
-    """Clear all data from tables in reverse dependency order to avoid foreign key constraint violations."""
-    # Delete in order to respect foreign key constraints
-    # Start with tables that have foreign keys pointing to other tables
-    await TradeObject.all().delete()
-    await Trade.all().delete()
-    await BallInstance.all().delete()
-    await Friendship.all().delete()
-    await Player.all().delete()
-    await GuildConfig.all().delete()
-    await BlacklistedID.all().delete()
-    await BlacklistedGuild.all().delete()
-    await Ball.all().delete()
-    await Special.all().delete()
-    await Economy.all().delete()
-    await Regime.all().delete()
+    """Clear all data from tables using TRUNCATE which also resets sequences."""
+    # Claude AI - Changed from DELETE to TRUNCATE CASCADE for proper sequence reset
+    client = Tortoise.get_connection("default")
     
-    # Reset all sequences after clearing data
+    # Claude AI - Get all table names
     all_models = [
         Regime, Economy, Special, Ball, Player, GuildConfig, 
         Friendship, BlacklistedID, BlacklistedGuild, BallInstance, 
         Trade, TradeObject
     ]
     
-    for model in all_models:
-        try:
-            await reset_sequence(model)
-        except Exception as e:
-            # Some tables might not have sequences, that's ok
-            pass
+    table_names = [model._meta.db_table for model in all_models]
+    
+    # Claude AI - TRUNCATE CASCADE will handle foreign key constraints and reset sequences
+    if table_names:
+        tables_str = ", ".join(table_names)
+        await client.execute_query(f"TRUNCATE TABLE {tables_str} RESTART IDENTITY CASCADE;")
+
 
 
 async def main():
@@ -428,13 +404,13 @@ async def main():
 
     message = await ctx.send(embed=reload_embed())  # type: ignore # noqa: F821
 
-    output.append("- Clearing existing data...")
-    await message.edit(embed=reload_embed())
+    output.append("- Clearing existing data...")  # Claude AI - Added progress message
+    await message.edit(embed=reload_embed())  # Claude AI - Added progress update
     
     await clear_all_data()
     
-    output.append("- Data cleared successfully. Starting migration...")
-    await message.edit(embed=reload_embed())
+    output.append("- Data cleared successfully. Starting migration...")  # Claude AI - Added progress message
+    await message.edit(embed=reload_embed())  # Claude AI - Added progress update
     
     await load(message)
 
