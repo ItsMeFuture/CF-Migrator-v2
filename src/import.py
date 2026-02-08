@@ -26,6 +26,11 @@ from ballsdex.core.models import (
 
 __version__ = "1.0.1"
 
+def safe_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 SECTIONS = {
     "R": [Regime, ["id", "background", "name"]],
@@ -248,14 +253,14 @@ async def load(message):
 
             if line_data is not None:
                 if isinstance(field_type, IntField):
-                    line_data = int(line_data)
+                    line_data = safe_int(line_data)
                 elif isinstance(field_type, FloatField):
                     line_data = float(line_data)
                 elif isinstance(field_type, DatetimeField):
                     line_data = datetime.fromisoformat(cast(str, line_data))
 
             if isinstance(line_data, str):
-                line_data.replace("🮈", "\n")
+                line_data = line_data.replace("🮈", "\n")
 
             model_dict[value] = line_data
 
@@ -353,3 +358,4 @@ async def main():
 
 
 await main()  # type: ignore  # noqa: F704
+
