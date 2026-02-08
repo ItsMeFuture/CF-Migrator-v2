@@ -351,17 +351,21 @@ async def sequence_all_models():
 
 
 async def clear_all_data():  # I'm not responsible if any of you eval goblins run this on your dex
-    models = Tortoise.apps.get("models")
-
-    if models is None:
-        return
-
+    """Clear all data from tables in reverse dependency order to avoid foreign key constraint violations."""
+    # Delete in order to respect foreign key constraints
+    # Start with tables that have foreign keys pointing to other tables
     await TradeObject.all().delete()
     await Trade.all().delete()
     await BallInstance.all().delete()
-
-    for model in models.values():
-        await model.all().delete()
+    await Friendship.all().delete()
+    await Player.all().delete()
+    await GuildConfig.all().delete()
+    await BlacklistedID.all().delete()
+    await BlacklistedGuild.all().delete()
+    await Ball.all().delete()
+    await Special.all().delete()
+    await Economy.all().delete()
+    await Regime.all().delete()
 
 
 async def main():
@@ -402,4 +406,3 @@ async def main():
 
 
 await main()  # type: ignore  # noqa: F704
-
