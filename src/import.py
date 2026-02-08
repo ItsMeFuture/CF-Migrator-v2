@@ -247,8 +247,16 @@ async def load(message):
     section = ""
     data = {}
 
+    output.append(f"- Reading migration file with {len(lines):,} lines...")  # Claude AI - Progress message
+    await message.edit(embed=reload_embed())
+
     for index, line in enumerate(lines, start=1):
         line = line.decode().rstrip()
+
+        # Claude AI - Progress update every 10000 lines
+        if index % 10000 == 0:
+            output[-1] = f"- Reading migration file... (line {index:,}/{len(lines):,})"
+            await message.edit(embed=reload_embed())
 
         if line.startswith("//") or line == "":
             continue
@@ -319,10 +327,16 @@ async def load(message):
         if model_dict is not None:
             data[section_full[0]].append(model_dict)
 
+    output.append(f"- Finished reading migration file. Processing {len(data)} model types...")  # Claude AI - Progress message
+    await message.edit(embed=reload_embed())
+
     start_time = time.time()
 
     # Claude AI - Process each model type separately and handle duplicates
     for item, value in data.items():
+        output.append(f"- Processing {item.__name__}... ({len(value):,} records to validate)")  # Claude AI - Progress message
+        await message.edit(embed=reload_embed())
+        
         # Claude AI - Get field definitions to check which fields are required
         fields_map = item._meta.fields_map
         
@@ -331,7 +345,12 @@ async def load(message):
         unique_values = []
         skipped_count = 0
         
-        for model in value:
+        for idx, model in enumerate(value):
+            # Claude AI - Progress update every 5000 records during validation
+            if idx > 0 and idx % 5000 == 0:
+                output[-1] = f"- Processing {item.__name__}... (validated {idx:,}/{len(value):,})"
+                await message.edit(embed=reload_embed())
+            
             model_id = model.get('id')
             
             # Claude AI - Skip records with None/null id
@@ -361,9 +380,17 @@ async def load(message):
             seen_ids.add(model_id)
             unique_values.append(model)
         
+        output[-1] = f"- Creating {item.__name__} instances... ({len(unique_values):,} valid records)"  # Claude AI - Progress message
+        await message.edit(embed=reload_embed())
+        
         # Claude AI - Create model instances with additional error handling
         items = []
-        for model in unique_values:
+        for idx, model in enumerate(unique_values):
+            # Claude AI - Progress update every 5000 records during instance creation
+            if idx > 0 and idx % 5000 == 0:
+                output[-1] = f"- Creating {item.__name__} instances... ({idx:,}/{len(unique_values):,})"
+                await message.edit(embed=reload_embed())
+            
             try:
                 instance = item(**model)
                 items.append(instance)
@@ -372,16 +399,23 @@ async def load(message):
                 skipped_count += 1
                 continue
 
+        output[-1] = f"- Saving {item.__name__} to database... ({len(items):,} objects)"  # Claude AI - Progress message
+        await message.edit(embed=reload_embed())
+
         if items:  # Claude AI - Only bulk_create if we have items
             try:
                 await item.bulk_create(items)
             except Exception as e:
                 # Claude AI - If bulk_create fails, try one by one
-                output.append(f"- Bulk create failed for {item.__name__}, trying individually...")
+                output[-1] = f"- Bulk create failed for {item.__name__}, trying individually..."
                 await message.edit(embed=reload_embed())
                 
                 success_count = 0
-                for single_item in items:
+                for idx, single_item in enumerate(items):
+                    if idx > 0 and idx % 1000 == 0:
+                        output[-1] = f"- Saving {item.__name__} individually... ({idx:,}/{len(items):,})"
+                        await message.edit(embed=reload_embed())
+                    
                     try:
                         await single_item.save()
                         success_count += 1
@@ -393,10 +427,12 @@ async def load(message):
         msg = f"- Added **{len(items):,}** {item.__name__} objects."
         if skipped_count > 0:
             msg += f" (skipped {skipped_count} invalid/duplicates)"
-        output.append(msg)
-
+        output[-1] = msg  # Claude AI - Replace progress message with final count
         await message.edit(embed=reload_embed())
 
+    output.append("- Updating database sequences...")  # Claude AI - Progress message
+    await message.edit(embed=reload_embed())
+    
     await sequence_all_models()
 
     await message.edit(embed=reload_embed(start_time, "FINISHED"))
