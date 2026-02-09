@@ -338,6 +338,8 @@ async def load(message):
         # Create model instances
         items = []
         validation_fail_count = 0
+        emoji_validation_count = 0
+        
         for idx, model in enumerate(unique_values):
             if idx > 0 and idx % 5000 == 0:
                 output[-1] = f"- Creating {item.__name__} instances... ({idx:,}/{len(unique_values):,})"
@@ -353,15 +355,23 @@ async def load(message):
             if model.get('tradeable') is None:
                 model['tradeable'] = True
             
-            # Validate Discord ID fields (must be 17-19 chars long)
+            # Validate Discord ID fields (must be 17-19 chars long)  
             emoji_id = model.get('emoji_id')
             if emoji_id is not None:
-                emoji_id_str = str(emoji_id)
-                if len(emoji_id_str) < 17 or len(emoji_id_str) > 19:
-                    # Invalid emoji_id - set to None or skip
-                    skipped_log.write(f"{item.__name__} - ID: {model.get('id')} - SKIPPED: Invalid emoji_id length: {len(emoji_id_str)} (value: {emoji_id})\n")
+                try:
+                    emoji_id_int = int(emoji_id)
+                    emoji_id_str = str(emoji_id_int)
+                    if len(emoji_id_str) < 17 or len(emoji_id_str) > 19:
+                        skipped_log.write(f"{item.__name__} - ID: {model.get('id')} - SKIPPED: Invalid emoji_id length {len(emoji_id_str)} (value: {emoji_id})\n")
+                        skipped_count += 1
+                        validation_fail_count += 1
+                        emoji_validation_count += 1
+                        continue
+                except (ValueError, TypeError):
+                    skipped_log.write(f"{item.__name__} - ID: {model.get('id')} - SKIPPED: Invalid emoji_id format (value: {emoji_id})\n")
                     skipped_count += 1
                     validation_fail_count += 1
+                    emoji_validation_count += 1
                     continue
             
             try:
@@ -369,9 +379,14 @@ async def load(message):
                 items.append(instance)
             except (ValueError, ValidationError) as e:
                 skipped_log.write(f"{item.__name__} - ID: {model.get('id')} - SKIPPED: Validation error: {str(e)[:200]}\n")
+                skipped_log.write(f"  emoji_id in model: {model.get('emoji_id')} (type: {type(model.get('emoji_id'))})\n")
                 skipped_count += 1
                 validation_fail_count += 1
                 continue
+        
+        if emoji_validation_count > 0:
+            output.append(f"  Note: Skipped {emoji_validation_count} items due to invalid emoji_id")
+            await message.edit(embed=reload_embed())
 
         output[-1] = f"- Saving {item.__name__} to database... ({len(items):,} objects)"
         await message.edit(embed=reload_embed())
