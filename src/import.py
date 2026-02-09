@@ -472,21 +472,31 @@ async def load(message):
             null_fields = []
             defaults_set = []
             
-            for field_name, field_value in list(model.items()):  # Use list() to avoid dict modification during iteration
-                if field_value is None and field_name in fields_map:
-                    field_obj = fields_map[field_name]
-                    # Check if field is required (not null and not a relation field)
-                    if hasattr(field_obj, 'null') and not field_obj.null:
+            # Claude AI - Check ALL required fields, even ones not in model dict yet
+            for field_name, field_obj in fields_map.items():
+                if hasattr(field_obj, 'null') and not field_obj.null:
+                    # Get value from model dict, or None if not present
+                    field_value = model.get(field_name)
+                    
+                    if field_value is None:
                         # Claude AI - Set default values for common fields instead of skipping
                         if field_name == 'country':
-                            model[field_name] = 'Unknown'  # Default country
+                            model[field_name] = 'Unknown'
                             defaults_set.append(f"{field_name}='Unknown'")
                         elif field_name == 'short_name':
-                            model[field_name] = 'Unknown'  # Default short_name
+                            model[field_name] = 'Unknown'
                             defaults_set.append(f"{field_name}='Unknown'")
+                        elif field_name == 'enabled':
+                            model[field_name] = True
+                            defaults_set.append(f"{field_name}=True")
+                        elif field_name == 'tradeable':
+                            model[field_name] = True
+                            defaults_set.append(f"{field_name}=True")
                         else:
-                            null_fields.append(field_name)
-                            skip_record = True
+                            # Check if it's a foreign key or relation field - those can be None sometimes
+                            if not hasattr(field_obj, 'related_model'):
+                                null_fields.append(field_name)
+                                skip_record = True
             
             if defaults_set:
                 placeholder_log.write(f"{item.__name__} ID {model_id}: Set defaults: {', '.join(defaults_set)}\n")
