@@ -467,7 +467,7 @@ async def load(message):
                 skipped_count += 1
                 continue
             
-            # Claude AI - Check for None values in non-nullable fields
+            # Claude AI - Check for None values in non-nullable fields and set defaults
             skip_record = False
             null_fields = []
             for field_name, field_value in model.items():
@@ -475,8 +475,13 @@ async def load(message):
                     field_obj = fields_map[field_name]
                     # Check if field is required (not null and not a relation field)
                     if hasattr(field_obj, 'null') and not field_obj.null:
-                        null_fields.append(field_name)
-                        skip_record = True
+                        # Claude AI - Set default values for common fields instead of skipping
+                        if field_name == 'country':
+                            model[field_name] = 'Unknown'  # Default country
+                            placeholder_log.write(f"{item.__name__} ID {model_id}: Set default country='Unknown' (was None)\n")
+                        else:
+                            null_fields.append(field_name)
+                            skip_record = True
             
             if skip_record:
                 skipped_log.write(f"{item.__name__} - ID: {model_id} - SKIPPED: Null required fields: {', '.join(null_fields)}\n")
@@ -503,8 +508,9 @@ async def load(message):
                 instance = item(**model)
                 items.append(instance)
             except (ValueError, ValidationError) as e:
-                # Claude AI - Skip records that fail validation
+                # Claude AI - Log the error with the actual model data for debugging
                 skipped_log.write(f"{item.__name__} - ID: {model.get('id')} - SKIPPED: Validation error: {str(e)[:200]}\n")
+                skipped_log.write(f"  Model data: {str(model)[:500]}\n")
                 skipped_count += 1
                 validation_fail_count += 1
                 continue
@@ -520,36 +526,17 @@ async def load(message):
                 inserted_ids[item] = seen_ids
                 
             except Exception as e:
-                # Claude AI - Log the actual error to help debug
-                error_msg = f"ERROR: {type(e).__name__}: {str(e)[:200]}"
-                skipped_log.write(f"\n{item.__name__} BULK CREATE FAILED: {error_msg}\n")
-                output.append(f"- Bulk create failed for {item.__name__}: {error_msg}")
-                output.append(f"- Attempting individual saves for {len(items):,} records (THIS WILL BE SLOW)...")
+                # Claude AI - Log the actual error - this shouldn't happen if validation worked
+                error_msg = f"ERROR: {type(e).__name__}: {str(e)[:500]}"
+                skipped_log.write(f"\n{item.__name__} BULK CREATE FAILED (THIS IS A BUG): {error_msg}\n")
+                output.append(f"- CRITICAL ERROR: Bulk create failed for {item.__name__}: {error_msg}")
+                output.append(f"- Check skipped_records.log for details. Stopping migration.")
                 await message.edit(embed=reload_embed())
                 
-                success_count = 0
-                successful_ids = set()
-                individual_fail_count = 0
-                
-                for idx, single_item in enumerate(items):
-                    if idx > 0 and idx % 1000 == 0:
-                        output[-1] = f"- Saving {item.__name__} individually... ({idx:,}/{len(items):,} - ~{int((idx/len(items))*100)}% done)"
-                        await message.edit(embed=reload_embed())
-                    
-                    try:
-                        await single_item.save()
-                        success_count += 1
-                        # Track the ID of successfully saved items
-                        if hasattr(single_item, 'id'):
-                            successful_ids.add(single_item.id)
-                    except Exception as individual_error:
-                        skipped_log.write(f"{item.__name__} - ID: {getattr(single_item, 'id', 'unknown')} - SKIPPED: Individual save error: {str(individual_error)[:200]}\n")
-                        skipped_count += 1
-                        individual_fail_count += 1
-                
-                # Claude AI - Track IDs that were actually saved
-                inserted_ids[item] = successful_ids
-                items = [None] * success_count  # Just for counting
+                # Claude AI - Close log files before raising
+                skipped_log.close()
+                placeholder_log.close()
+                raise  # Re-raise to stop migration
 
         # Claude AI - Build detailed skip message with breakdown
         msg = f"- Added **{len(items):,}** {item.__name__} objects."
