@@ -353,6 +353,17 @@ async def load(message):
             if model.get('tradeable') is None:
                 model['tradeable'] = True
             
+            # Validate Discord ID fields (must be 17-19 chars long)
+            emoji_id = model.get('emoji_id')
+            if emoji_id is not None:
+                emoji_id_str = str(emoji_id)
+                if len(emoji_id_str) < 17 or len(emoji_id_str) > 19:
+                    # Invalid emoji_id - set to None or skip
+                    skipped_log.write(f"{item.__name__} - ID: {model.get('id')} - SKIPPED: Invalid emoji_id length: {len(emoji_id_str)} (value: {emoji_id})\n")
+                    skipped_count += 1
+                    validation_fail_count += 1
+                    continue
+            
             try:
                 instance = item(**model)
                 items.append(instance)
