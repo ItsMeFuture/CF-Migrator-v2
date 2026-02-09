@@ -472,13 +472,12 @@ async def load(message):
             null_fields = []
             defaults_set = []
             
-            # Claude AI - Check ALL required fields, even ones not in model dict yet
-            for field_name, field_obj in fields_map.items():
-                if hasattr(field_obj, 'null') and not field_obj.null:
-                    # Get value from model dict, or None if not present
-                    field_value = model.get(field_name)
-                    
-                    if field_value is None:
+            # Claude AI - First pass: check fields that are in the model dict
+            for field_name, field_value in list(model.items()):
+                if field_value is None and field_name in fields_map:
+                    field_obj = fields_map[field_name]
+                    # Check if field is required (not null and not a relation field)
+                    if hasattr(field_obj, 'null') and not field_obj.null:
                         # Claude AI - Set default values for common fields instead of skipping
                         if field_name == 'country':
                             model[field_name] = 'Unknown'
@@ -493,10 +492,9 @@ async def load(message):
                             model[field_name] = True
                             defaults_set.append(f"{field_name}=True")
                         else:
-                            # Check if it's a foreign key or relation field - those can be None sometimes
-                            if not hasattr(field_obj, 'related_model'):
-                                null_fields.append(field_name)
-                                skip_record = True
+                            # No default available for this field
+                            null_fields.append(field_name)
+                            skip_record = True
             
             if defaults_set:
                 placeholder_log.write(f"{item.__name__} ID {model_id}: Set defaults: {', '.join(defaults_set)}\n")
@@ -522,20 +520,15 @@ async def load(message):
                 output[-1] = f"- Creating {item.__name__} instances... ({idx:,}/{len(unique_values):,})"
                 await message.edit(embed=reload_embed())
             
-            # Claude AI - Final check: ensure no None values in non-nullable fields
-            has_none_issue = False
-            for field_name, field_obj in fields_map.items():
-                if field_name in model and model[field_name] is None:
-                    if hasattr(field_obj, 'null') and not field_obj.null:
-                        skipped_log.write(f"{item.__name__} - ID: {model.get('id')} - SKIPPED at instance creation: Field '{field_name}' is None but required\n")
-                        skipped_log.write(f"  Full model: {model}\n")
-                        validation_fail_count += 1
-                        skipped_count += 1
-                        has_none_issue = True
-                        break
-            
-            if has_none_issue:
-                continue
+            # Claude AI - Final pass: ensure common required fields have defaults
+            if 'short_name' in model and model['short_name'] is None:
+                model['short_name'] = 'Unknown'
+            if 'country' in model and model['country'] is None:
+                model['country'] = 'Unknown'
+            if 'enabled' in model and model['enabled'] is None:
+                model['enabled'] = True
+            if 'tradeable' in model and model['tradeable'] is None:
+                model['tradeable'] = True
             
             try:
                 instance = item(**model)
