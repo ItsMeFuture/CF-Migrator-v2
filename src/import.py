@@ -234,11 +234,13 @@ async def load(message):
         
         fields_map = item._meta.fields_map
         
-        # Identify foreign key fields
+        # Identify foreign key fields - map both 'field' and 'field_id' to related model
         fk_fields = {}
         for field_name, field_obj in fields_map.items():
             if hasattr(field_obj, 'related_model') and field_obj.related_model is not None:
-                fk_fields[field_name] = field_obj.related_model
+                # Tortoise stores FK as 'player' in fields_map but migration data uses 'player_id'
+                fk_fields[field_name] = field_obj.related_model          # e.g. 'player'
+                fk_fields[field_name + '_id'] = field_obj.related_model  # e.g. 'player_id'
         
         seen_ids = set()
         unique_values = []
