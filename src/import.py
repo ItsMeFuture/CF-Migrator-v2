@@ -119,7 +119,11 @@ async def get_or_create_placeholder_player(missing_player_id, placeholder_log, c
     if placeholder_key in created_placeholders:
         return created_placeholders[placeholder_key]
     
-    placeholder_discord_id = -10000000000 - missing_player_id
+    # Claude AI - Use a valid 18-digit discord_id in a reserved range
+    # 900000000000000000 + missing_player_id keeps it 18 digits for IDs up to 99999999999999999
+    # We clamp to ensure it stays 17-19 digits
+    placeholder_discord_id = 900000000000000000 + (missing_player_id % 99999999999999999)
+    
     placeholder_player = await Player.filter(discord_id=placeholder_discord_id).first()
     
     if not placeholder_player:
@@ -501,8 +505,8 @@ async def load(message):
     skipped_log.close()
     
     placeholder_log.write("\n=== END OF LOG ===\n")
-    placeholder_log.write(f"\nTo find all placeholder players: SELECT * FROM player WHERE discord_id < -10000000000;\n")
-    placeholder_log.write(f"To recover original player ID: original_id = abs(discord_id + 10000000000)\n")
+    placeholder_log.write(f"\nTo find all placeholder players: SELECT * FROM player WHERE discord_id >= 900000000000000000;\n")
+    placeholder_log.write(f"To recover original player ID: original_id = discord_id - 900000000000000000\n")
     placeholder_log.close()
     
     if os.path.exists("skipped_records.log"):
