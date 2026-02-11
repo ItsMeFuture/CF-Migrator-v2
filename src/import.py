@@ -24,6 +24,7 @@ from ballsdex.core.models import (
     Trade,
     TradeObject,
 )
+from ballsdex.core.models import DonationPolicy, PrivacyPolicy
 
 __version__ = "1.0.3-cleaned"
 
@@ -127,10 +128,20 @@ async def get_or_create_placeholder_player(missing_player_id, placeholder_log, c
     placeholder_player = await Player.filter(discord_id=placeholder_discord_id).first()
     
     if not placeholder_player:
+        # Use the first valid enum value for each policy field
+        try:
+            donation = DonationPolicy.ALWAYS_ACCEPT
+        except AttributeError:
+            donation = list(DonationPolicy)[0]
+        try:
+            privacy = PrivacyPolicy.ALLOW_ALL
+        except AttributeError:
+            privacy = list(PrivacyPolicy)[0]
+        
         placeholder_player = await Player.create(
             discord_id=placeholder_discord_id,
-            donation_policy=0,
-            privacy_policy=0
+            donation_policy=donation,
+            privacy_policy=privacy,
         )
         placeholder_log.write(f"Created placeholder Player (discord_id={placeholder_discord_id}, DB ID={placeholder_player.pk}) for missing Player ID {missing_player_id}\n")
     
