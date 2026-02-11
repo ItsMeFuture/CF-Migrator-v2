@@ -287,41 +287,52 @@ async def load(message):
             for fk_field_name, related_model in fk_fields.items():
                 fk_value = model.get(fk_field_name)
                 
-                # Treat 0 as invalid - either null it out or replace with placeholder
+                # Skip None values entirely
+                if fk_value is None:
+                    continue
+                
+                # Treat 0 as invalid
                 if fk_value == 0:
-                    field_obj = fields_map.get(fk_field_name) or fields_map.get(fk_field_name.replace('_id', ''))
-                    is_nullable = field_obj and getattr(field_obj, 'null', True)
+                    # Look up the field without _id suffix to find the actual field object
+                    base_field_name = fk_field_name[:-3] if fk_field_name.endswith('_id') else fk_field_name
+                    field_obj = fields_map.get(base_field_name)
+                    is_nullable = field_obj is not None and getattr(field_obj, 'null', False)
+                    
                     if is_nullable:
                         model[fk_field_name] = None
+                        placeholder_log.write(f"{item.__name__} ID {model_id}: Set {fk_field_name}=None (was 0, field is nullable)\n")
                     elif related_model == Player:
                         placeholder_id = await get_or_create_placeholder_player(0, placeholder_log, created_placeholders)
                         if Player not in inserted_ids:
                             inserted_ids[Player] = set()
                         inserted_ids[Player].add(placeholder_id)
                         model[fk_field_name] = placeholder_id
-                    fk_value = None  # Mark as handled
+                        placeholder_log.write(f"{item.__name__} ID {model_id}: Replaced {fk_field_name}=0 with placeholder ID {placeholder_id}\n")
+                    else:
+                        skipped_log.write(f"{item.__name__} - ID: {model_id} - SKIPPED: {fk_field_name}=0 is invalid\n")
+                        has_invalid_fk = True
+                        fk_violation_count += 1
+                    continue  # Done handling this field
                 
-                if fk_value is not None:
-                    exists_in_tracking = related_model in inserted_ids and fk_value in inserted_ids[related_model]
+                # Normal FK validation
+                exists_in_tracking = related_model in inserted_ids and fk_value in inserted_ids[related_model]
+                
+                if not exists_in_tracking:
+                    exists_in_db = await related_model.filter(pk=fk_value).exists()
                     
-                    if not exists_in_tracking:
-                        exists_in_db = await related_model.filter(pk=fk_value).exists()
-                        
-                        if not exists_in_db:
-                            if related_model == Player:
-                                placeholder_id = await get_or_create_placeholder_player(fk_value, placeholder_log, created_placeholders)
-                                
-                                if Player not in inserted_ids:
-                                    inserted_ids[Player] = set()
-                                inserted_ids[Player].add(placeholder_id)
-                                
-                                model[fk_field_name] = placeholder_id
-                                placeholder_log.write(f"{item.__name__} ID {model_id}: Reassigned {fk_field_name} from missing Player ID {fk_value} to placeholder DB ID {placeholder_id}\n")
-                            else:
-                                skipped_log.write(f"{item.__name__} - ID: {model_id} - SKIPPED: Invalid FK {fk_field_name}={fk_value} (references non-existent {related_model.__name__})\n")
-                                has_invalid_fk = True
-                                fk_violation_count += 1
-                                break
+                    if not exists_in_db:
+                        if related_model == Player:
+                            placeholder_id = await get_or_create_placeholder_player(fk_value, placeholder_log, created_placeholders)
+                            if Player not in inserted_ids:
+                                inserted_ids[Player] = set()
+                            inserted_ids[Player].add(placeholder_id)
+                            model[fk_field_name] = placeholder_id
+                            placeholder_log.write(f"{item.__name__} ID {model_id}: Reassigned {fk_field_name} from missing Player ID {fk_value} to placeholder DB ID {placeholder_id}\n")
+                        else:
+                            skipped_log.write(f"{item.__name__} - ID: {model_id} - SKIPPED: Invalid FK {fk_field_name}={fk_value} (references non-existent {related_model.__name__})\n")
+                            has_invalid_fk = True
+                            fk_violation_count += 1
+                            break
             
             if has_invalid_fk:
                 skipped_count += 1
