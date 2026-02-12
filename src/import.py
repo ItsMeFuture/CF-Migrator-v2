@@ -516,6 +516,36 @@ async def load(message):
                 output.append(f"  Fixed {fixed_count} None required fields before save")
                 await message.edit(embed=reload_embed())
             
+            # FINAL PASS: scan every instance for any _id field that is 0 (never valid)
+            zero_fk_fixed = 0
+            for instance in items:
+                for attr in list(vars(instance).keys()):
+                    if attr.endswith('_id') and not attr.startswith('_'):
+                        val = getattr(instance, attr, None)
+                        if val == 0:
+                            # Determine if nullable by checking fields_map
+                            base = attr[:-3]
+                            field_obj = instance._meta.fields_map.get(base) or instance._meta.fields_map.get(attr)
+                            is_nullable = field_obj is not None and getattr(field_obj, 'null', False)
+                            if is_nullable:
+                                setattr(instance, attr, None)
+                            else:
+                                # Non-nullable FK = 0, create placeholder if it's player_id
+                                if 'player' in attr:
+                                    placeholder_id = await get_or_create_placeholder_player(0, placeholder_log, created_placeholders)
+                                    if Player not in inserted_ids:
+                                        inserted_ids[Player] = set()
+                                    inserted_ids[Player].add(placeholder_id)
+                                    setattr(instance, attr, placeholder_id)
+                                else:
+                                    setattr(instance, attr, None)
+                            placeholder_log.write(f"{item.__name__} ID {getattr(instance, 'id', '?')}: FINAL PASS fixed {attr}=0\n")
+                            zero_fk_fixed += 1
+            
+            if zero_fk_fixed > 0:
+                output.append(f"  Fixed {zero_fk_fixed} zero FK values in final pass")
+                await message.edit(embed=reload_embed())
+            
             try:
                 await item.bulk_create(items)
                 inserted_ids[item] = seen_ids
@@ -659,6 +689,26 @@ async def main():
     
     output.append("- Data cleared successfully. Starting migration...")
     await message.edit(embed=reload_embed())
+    
+    # Create a special Player with id=0 for invalid FK references
+    try:
+        donation = list(DonationPolicy)[0]
+        privacy = list(PrivacyPolicy)[0]
+        
+        await Player.create(
+            id=0,
+            discord_id=100000000000000000,  # Valid 18-digit ID
+            donation_policy=donation,
+            privacy_policy=privacy
+        )
+        # Reset sequence to 1 so real player IDs start at 1
+        client = Tortoise.get_connection("default")
+        await client.execute_query("SELECT setval('player_id_seq', 1, false);")
+        output.append("- Created Player id=0 for invalid FK references")
+        await message.edit(embed=reload_embed())
+    except Exception as e:
+        output.append(f"- Note: Could not create Player id=0: {str(e)[:100]}")
+        await message.edit(embed=reload_embed())
     
     await load(message)
 
