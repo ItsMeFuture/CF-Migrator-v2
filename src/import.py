@@ -613,9 +613,15 @@ async def load(message):
 async def sequence_model(model):
     if await model.all().count() == 0:
         return
-    client = Tortoise.get_connection("default")
-    last_id = await model.all().order_by("-id").first().values_list("id", flat=True)
-    await client.execute_query(f"SELECT setval('{model._meta.db_table}_id_seq', {last_id});")
+    
+    try:
+        client = Tortoise.get_connection("default")
+        last_id = await model.all().order_by("-id").first().values_list("id", flat=True)
+        await client.execute_query(f"SELECT setval('{model._meta.db_table}_id_seq', {last_id});")
+    except Exception as e:
+        # Table might not have a sequence (no auto-increment id field)
+        # or sequence might be named differently - skip silently
+        pass
 
 
 async def sequence_all_models():
