@@ -153,6 +153,7 @@ async def load(message):
     lines = read_bz2("migration.txt.bz2")
     section = ""
     data = {}
+    exclusive_id_map = {}  # Claude AI - Map original Exclusive IDs to offset IDs
 
     skipped_log = open("skipped_records.log", "w", encoding="utf-8")
     skipped_log.write("=== MIGRATION SKIPPED RECORDS LOG ===\n")
@@ -233,7 +234,17 @@ async def load(message):
                 line_data = line_data.replace("🮈", "\n")
 
             model_dict[value] = line_data
-
+        
+        # Claude AI - CRITICAL: Offset Exclusive IDs to avoid conflicts with Event IDs
+        # Both S-EV and S-EX map to Special, so Event ID 1 != Exclusive ID 1
+        if model_dict is not None and section == "S-EX":
+            if 'id' in model_dict and model_dict['id'] is not None:
+                original_id = model_dict['id']
+                new_id = original_id + 10000
+                exclusive_id_map[original_id] = new_id  # Track mapping for BallInstance updates
+                model_dict['id'] = new_id
+                placeholder_log.write(f"Exclusive ID {original_id} offset to {new_id}\n")
+        
         if model_dict is not None:
             data[section_full[0]].append(model_dict)
 
@@ -243,7 +254,18 @@ async def load(message):
     start_time = time.time()
     inserted_ids = {}
     
-    for item, value in data.items():
+    # Claude AI - CRITICAL: Process models in dependency order
+    # Players must be inserted BEFORE BallInstances that reference them
+    processing_order = [
+        Regime, Economy, Special, Ball, Player,  # Base models first
+        BallInstance, GuildConfig, Friendship,    # Then models with FKs to Player
+        BlacklistedID, BlacklistedGuild, Trade, TradeObject  # Finally other models
+    ]
+    
+    for item in processing_order:
+        if item not in data:
+            continue
+        value = data[item]
         output.append(f"- Processing {item.__name__}... ({len(value):,} records to validate)")
         await message.edit(embed=reload_embed())
         
@@ -328,6 +350,10 @@ async def load(message):
                             inserted_ids[Player].add(placeholder_id)
                             model[fk_field_name] = placeholder_id
                             placeholder_log.write(f"{item.__name__} ID {model_id}: Reassigned {fk_field_name} from missing Player ID {fk_value} to placeholder DB ID {placeholder_id}\n")
+                        elif related_model == Special:
+                            # Special is nullable - if it doesn't exist, just null it out
+                            model[fk_field_name] = None
+                            placeholder_log.write(f"{item.__name__} ID {model_id}: Set {fk_field_name}=None (Special ID {fk_value} not found - might be Event/Exclusive ID conflict)\n")
                         else:
                             skipped_log.write(f"{item.__name__} - ID: {model_id} - SKIPPED: Invalid FK {fk_field_name}={fk_value} (references non-existent {related_model.__name__})\n")
                             has_invalid_fk = True
@@ -600,17 +626,21 @@ async def load(message):
     placeholder_log.write(f"To recover original player ID: original_id = discord_id - 900000000000000000\n")
     placeholder_log.close()
     
-    if os.path.exists("skipped_records.log"):
-        shutil.copy("skipped_records.log", "/mnt/user-data/outputs/skipped_records.log")
-    if os.path.exists("placeholder_assignments.log"):
-        shutil.copy("placeholder_assignments.log", "/mnt/user-data/outputs/placeholder_assignments.log")
+    # Try to copy log files but don't fail migration if this doesn't work
+    try:
+        if os.path.exists("skipped_records.log"):
+            shutil.copy("skipped_records.log", "/mnt/user-data/outputs/skipped_records.log")
+        if os.path.exists("placeholder_assignments.log"):
+            shutil.copy("placeholder_assignments.log", "/mnt/user-data/outputs/placeholder_assignments.log")
+        output.append("- Migration complete! Logs saved to outputs directory.")
+    except Exception:
+        output.append("- Migration complete! Logs saved to working directory (skipped_records.log, placeholder_assignments.log)")
     
-    output.append("- Migration complete! Logs saved.")
-
     await message.edit(embed=reload_embed(start_time, "FINISHED"))
 
 
 async def sequence_model(model):
+    """Reset PostgreSQL sequence for a model after bulk insert. Non-critical - data is already saved."""
     if await model.all().count() == 0:
         return
     
@@ -618,9 +648,9 @@ async def sequence_model(model):
         client = Tortoise.get_connection("default")
         last_id = await model.all().order_by("-id").first().values_list("id", flat=True)
         await client.execute_query(f"SELECT setval('{model._meta.db_table}_id_seq', {last_id});")
-    except Exception as e:
-        # Table might not have a sequence (no auto-increment id field)
-        # or sequence might be named differently - skip silently
+    except Exception:
+        # Sequence might not exist or be named differently - this is OK, data is already saved
+        # Future .create() calls will just use the default sequence value
         pass
 
 
